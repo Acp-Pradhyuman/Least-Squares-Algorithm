@@ -284,4 +284,156 @@ invalidDenom:
     ret
 
 calcLeastSquaresASM endp
+
+; avxAddPackedFp(double x[], double y[], int size, double* sumX, double* sumY);
+avxAddPackedFp proc
+    push ebp
+    mov ebp, esp
+
+    ; contents of stack
+    ; ebp       -> ebp (4-bytes)
+    ; ret addr  (4-bytes)
+    ; x         (4-bytes)
+    ; y         (4-bytes)
+    ; size      (4-bytes)
+    ; sumX      (4-bytes)
+    ; sumY
+
+    mov eax, [ebp+8]    ; eax <- x
+    mov edx, [ebp+12]   ; edx <- y
+    mov ecx, [ebp+16]   ; ecx <- size
+    shr ecx, 3
+    ; dec ecx
+
+    vzeroall
+
+@@:
+    ; VMOVAPD ymm1, ymm2/m256
+    ; Move aligned packed double precision floating-point values from 
+    ; ymm2/mem to ymm1
+    vmovapd ymm2, ymmword ptr [eax]
+    vaddpd ymm1, ymm1, ymm2
+    vmovapd ymm0, ymmword ptr [eax+32]
+    vaddpd ymm1, ymm1, ymm0
+
+    vmovapd ymm5, ymmword ptr [edx]
+    vaddpd ymm4, ymm4, ymm5
+    vmovapd ymm3, ymmword ptr [edx+32]
+    vaddpd ymm4, ymm4, ymm3
+    add eax, 64
+    add edx, 64
+    loop @B
+
+    ; VHADDPD (VEX.256 Encoded Version)
+    ; DEST[63:0] := SRC1[127:64] + SRC1[63:0]
+    ; DEST[127:64] := SRC2[127:64] + SRC2[63:0]
+    ; DEST[191:128] := SRC1[255:192] + SRC1[191:128]
+    ; DEST[255:192] := SRC2[255:192] + SRC2[191:128]
+    ; if ymm1 have [y3, y2, y1, y0]
+    ; where y3, y2, y1, y0 are double data results
+    ; After vhaddpd, 
+    ; YMM1 now contains as qwords y3+y2 (two times), 
+    ; y1+y0 (two times)
+    ; ymm1 have [y3+y2, y3+y2, y1+y0, y1+y0]
+    vhaddpd	ymm1, ymm1, ymm1
+    vhaddpd	ymm4, ymm4, ymm4
+    ; ymm2 = [y3+y2, y3+y2, y1+y0, y1+y0]
+    vmovapd ymm2, ymm1
+    vmovapd ymm5, ymm4
+
+    ; VPERMPD ymm1, ymm2/m256, imm8
+    ; DEST[63:0] := (SRC[255:0] >> (IMM8[1:0] * 64))[63:0];
+    ; DEST[127:64] := (SRC[255:0] >> (IMM8[3:2] * 64))[63:0];
+    ; DEST[191:128] := (SRC[255:0] >> (IMM8[5:4] * 64))[63:0];
+    ; DEST[255:192] := (SRC[255:0] >> (IMM8[7:6] * 64))[63:0];
+    ; DEST[MAXVL-1:256] := 0
+    ; 2 = 00000010
+    ; IMM8[1:0] = 10 → Shift by 2 * 64 = 128 bits.
+    ; IMM8[3:2] = 00 → Shift by 0 * 64 = 0 bits.
+    ; IMM8[5:4] = 00 → Shift by 0 * 64 = 0 bits.
+    ; IMM8[7:6] = 00 → Shift by 0 * 64 = 0 bits.
+    ; so ymm2 = [y3+y2, y3+y2, y1+y0, y1+y0]
+    ; becomes ymm2 = [y1+y0, y1+y0, y1+y0, y3+y2]
+    vpermpd ymm2, ymm2, 2
+    ; vpermpd ymm2, ymm2, 3 also works
+    vpermpd ymm5, ymm5, 2
+
+    ; ymm2 = [y1+y0, y1+y0, y1+y0, y3+y2]
+    ; ymm1 = [y3+y2, y3+y2, y1+y0, y1+y0]
+    ; ymm0 = [x    , x    , x    , y3+y2+y1+y0]
+    vaddpd ymm0, ymm1, ymm2
+    vaddpd ymm3, ymm4, ymm5
+
+    ; vmovapd real8 ptr [edx], ymm0
+    ; vmovsd qword ptr [edx], xmm0
+    mov eax, [ebp+20]   ; eax <- sumX 
+    mov edx, [ebp+24]   ; edx <- sumY
+    vmovsd qword ptr [eax], xmm0
+    vmovsd qword ptr [edx], xmm3
+
+    vzeroupper
+
+    pop ebp
+    ret
+avxAddPackedFp endp
+
+; fmaPackedFp(double x[], double y[], int size, double* sumXX, double* sumXY);
+fmaPackedFp proc
+    push ebp
+    mov ebp, esp
+
+    ; contents of stack
+    ; ebp       -> ebp (4-bytes)
+    ; ret addr  (4-bytes)
+    ; x         (4-bytes)
+    ; y         (4-bytes)
+    ; size      (4-bytes)
+    ; sumXX     (4-bytes)
+    ; sumXY
+
+    mov eax, [ebp+8]    ; eax <- x
+    mov edi, [ebp+12]   ; edi <- y
+    mov ecx, [ebp+16]   ; ecx <- size
+    shr ecx, 2
+
+    xor esi, esi
+
+    ; remember to clear ymm registers since it might have previous results
+    vzeroall
+
+@@:
+    ; VMOVAPD ymm1, ymm2/m256
+    ; Move aligned packed double precision floating-point values from 
+    ; ymm2/mem to ymm1
+    vmovapd ymm1, ymmword ptr [eax + esi]   ; ymm1 <- x
+    vmovapd ymm2, ymmword ptr [edi + esi]   ; ymm2 <- y
+
+    ; VFMADD231PD ymm1, ymm2, ymm3/m256
+    vfmadd231pd ymm3, ymm1, ymm1            ; ymm3 calculates sumXX
+    vfmadd231pd ymm4, ymm1, ymm2            ; ymm4 calculates sumXY
+    add esi, 32
+    loop @B
+
+    vhaddpd	ymm3, ymm3, ymm3
+    vmovapd ymm2, ymm3
+    vpermpd ymm2, ymm2, 2
+    vaddpd ymm0, ymm2, ymm3
+
+    vhaddpd	ymm4, ymm4, ymm4
+    vmovapd ymm2, ymm4
+    vpermpd ymm2, ymm2, 2
+    vaddpd ymm1, ymm2, ymm4
+
+    mov eax, [ebp+20]   ; eax <- sumX 
+    mov edx, [ebp+24]   ; edx <- sumY
+
+    ; vmovapd real8 ptr [edx], ymm0
+    vmovsd qword ptr [eax], xmm0
+    vmovsd qword ptr [edx], xmm1
+
+    vzeroupper
+
+    pop ebp
+    ret
+fmaPackedFp endp
 end
