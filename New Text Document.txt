@@ -1,0 +1,3 @@
+the time of functions were recording while the laptop was charging, since in charging mode we get best performance
+
+For more confidence in our timing, running between 30 and 50 trials is a common practice. This helps minimize the impact of outliers and ensures that the results are statistically stable.
