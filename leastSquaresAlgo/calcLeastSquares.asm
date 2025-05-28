@@ -185,11 +185,11 @@ calcLeastSquaresASM proc
     ; sumXY
     ; sumXX
 
-    ; FSTP ST(i) -> Copy ST(0) to ST(i) and pop register stack.
-    fstp st(0)
-
     ; LsEpsilon >= fabs(denom)
     jae invalidDenom    ; jump if epsilon >= fabs(denom)
+
+    ; FSTP ST(i) -> Copy ST(0) to ST(i) and pop register stack.
+    fstp st(0)
 
     ; contents of x87 stack
     ; sumX
