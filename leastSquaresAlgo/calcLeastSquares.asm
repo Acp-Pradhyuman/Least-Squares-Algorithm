@@ -277,6 +277,7 @@ invalidDenom:
     fstp st(0)
     fstp st(0)
     fstp st(0)
+    fstp st(0)
 
     xor eax, eax
     mov esp, ebp
